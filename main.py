@@ -1,48 +1,103 @@
 import serial
 import matplotlib.pyplot as plt
+import csv
+import time
+from scipy.signal import butter, filtfilt
+import numpy as np
+
+# Function to create a bandpass filter
+def butter_bandpass(lowcut, highcut, fs, order=4):
+    nyquist = 0.5 * fs
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    b, a = butter(order, [low, high], btype='band')
+    return b, a
+
+def bandpass_filter(data, lowcut, highcut, fs, order=4):
+    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
+    y = filtfilt(b, a, data)
+    return y
+
+def round_value(value, decimals=4):
+    rounded = round(value, decimals)
+    return rounded if rounded != 0 else abs(rounded)
 
 # Serial port initialization
-port = serial.Serial('/dev/cu.usbmodem1301', 2000000)  # Replace with your port name
-
-# Buffer initialization
-buffer_size = 500
-data_buffer = [0] * buffer_size
+port = serial.Serial('COM3', 2000000)  # Replace with your port name
 
 # Plot initialization
 plt.ion()  # Turn on interactive mode
-fig, ax = plt.subplots()
+fig, axs = plt.subplots(5, 1, figsize=(10, 8))
 
-# Adjust x-axis range
-x_range = 100  # Adjust this value to set the desired x-axis range
-x_values = list(range(x_range))  # Create a list with the desired range
+# Define sampling frequency (adjust based on your device)
+fs = 2000
 
-# Initialize the data buffer with zeros
-data_buffer = [0] * x_range
+# Define frequency bands and their amplitude ranges
+bands = {
+    'Delta': (0.5, 4, 200),
+    'Theta': (4, 8, 100),
+    'Alpha': (8, 13, 60),
+    'Beta': (13, 30, 30),
+    'Gamma': (30, 100, 20)
+}
 
-# Plot setup
-line, = ax.plot(x_values, data_buffer)
+# Initialize data buffers for each band
+buffer_size = 600
+data_buffers = {band: np.zeros(buffer_size) for band in bands.keys()}
 
-# Set plot labels and limits
-ax.set_xlim(0, x_range)  # Set the x-axis limit to the desired range
-ax.set_ylim(0, 300)
-ax.set_xlabel('Index')
-ax.set_ylabel('Value')
+# Initialize plot lines for each band
+lines = {}
+for ax, (band, (_, _, amp_range)) in zip(axs, bands.items()):
+    ax.set_xlim(0, buffer_size)
+    ax.set_ylim(-amp_range, amp_range)  # Adjust based on expected signal range
+    ax.set_ylabel(band)
+    line, = ax.plot(range(buffer_size), data_buffers[band])
+    lines[band] = line
+axs[-1].set_xlabel('Sample')
 
-# Main loop
-while True:
-    # Read data from serial port
-    data = port.readline().strip().decode('utf-8')
-    try:
-        val = int(data)
-        # Shift buffer
-        data_buffer.pop(0)
-        data_buffer.append(val)
-        # Update plot
-        line.set_ydata(data_buffer)
-        plt.draw()
-        plt.pause(0.001)
-    except ValueError:
-        print("Invalid data received from serial port:", data)
+# Open CSV file
+with open('data.csv', 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['Timestamp'] + list(bands.keys()))  # Write header
 
-# Close serial port
-port.close()
+    start_time = time.time()
+
+    # Main loop
+    while True:
+        # Read data from serial port
+        data = port.readline().strip().decode('utf-8')
+        try:
+            timestamp = time.time() - start_time
+            val = int(data)
+
+            # Debug: Print raw data value
+            print(f"Raw data: {val}")
+
+            csv_row = [round(timestamp, 2)]  # Initialize CSV row with rounded timestamp
+
+            for band, (lowcut, highcut, _) in bands.items():
+                # Shift data buffer and add new value
+                data_buffers[band] = np.roll(data_buffers[band], -1)
+                data_buffers[band][-1] = val
+
+                # Apply bandpass filter
+                filtered_data = bandpass_filter(data_buffers[band], lowcut, highcut, fs)
+
+                # Update plot
+                lines[band].set_ydata(filtered_data)
+
+                # Add rounded filtered data to CSV row
+                
+            csv_row.append(round(data_buffers["+"][0], 4))  # Append the latest filtered value
+            # Write CSV row
+            writer.writerow(csv_row)
+
+            plt.draw()
+            plt.pause(0.001)
+
+        except ValueError:
+            print("Invalid data received from serial port:", data)
+            data = None
+
+    # Close serial port
+    port.close()
